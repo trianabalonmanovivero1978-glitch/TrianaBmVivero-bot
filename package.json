@@ -1,0 +1,18 @@
+{
+  "name": "triana-digital-core-bot",
+  "version": "1.0.0",
+  "description": "Bot Telegram del Club BM Triana Vivero — Vercel Serverless",
+  "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@supabase/supabase-js": "^2.47.0",
+    "axios": "^1.7.9"
+  }
+}
