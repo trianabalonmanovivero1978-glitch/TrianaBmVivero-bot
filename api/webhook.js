@@ -20,6 +20,7 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 
 // ── Función auxiliar: Escapar HTML (Mejora 1) ─────────────────────────────────
 function escapeHTML(text) {
+  if (!text) return "";
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -166,6 +167,7 @@ export default async function handler(req, res) {
       const sesionGuardada = await guardarSesionEnSupabase(chatId, userId, descripcion, geminiData);
 
       // 3. Construir respuesta escapando el contenido de la IA (Mejora 1 aplicada aquí)
+      // 3. Construir respuesta (Asegúrate de que esta parte esté así)
       const contenidosLimpios = escapeHTML(geminiData.contents);
       const objetivosFormateados = geminiData.objectives
         .map((obj, i) => `    ${i + 1}. ${escapeHTML(obj)}`)
@@ -173,10 +175,9 @@ export default async function handler(req, res) {
 
       await sendTelegramMessage(
         chatId,
-        `✅ <b>Sesión registrada correctamente.</b>\n\n` +
+        `✅ <b>Sesión #${sesionGuardada.id} registrada</b>\n\n` +
         `<b>📝 Contenido técnico:</b>\n${contenidosLimpios}\n\n` +
-        `<b>🎯 Objetivos:</b>\n${objetivosFormateados}\n\n` +
-        `<i>ID: #${sesionGuardada.id}</i>`
+        `<b>🎯 Objetivos:</b>\n${objetivosFormateados}`
       );
       return;
     }
