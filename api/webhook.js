@@ -104,7 +104,7 @@ async function guardarSesionEnSupabase(chatId, telegramUserId, descripcionOrigin
 
   const entrenadorId = acceso?.socio_id || null;
 
-  // Cambiado de "training_sessions" a "sesiones" para coincidir con tu SQL
+  // Simplificamos: eliminamos fecha y created_at porque Supabase los genera solo
   const { data, error } = await supabase
     .from("sesiones") 
     .insert({
@@ -113,9 +113,7 @@ async function guardarSesionEnSupabase(chatId, telegramUserId, descripcionOrigin
       telegram_user_id: String(telegramUserId),
       descripcion_original: descripcionOriginal,
       contents: geminiData.contents,
-      objectives: geminiData.objectives,
-      fecha: new Date().toISOString().split("T")[0],
-      created_at: new Date().toISOString(),
+      objectives: geminiData.objectives
     })
     .select()
     .single();
