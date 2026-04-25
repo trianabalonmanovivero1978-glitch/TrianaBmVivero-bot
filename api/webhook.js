@@ -50,28 +50,24 @@ EJEMPLO DE SALIDA VÁLIDA:
 }`;
 
 // ── Función auxiliar: enviar mensaje a Telegram (Mejora 2: Robustez) ───────────
-async function sendTelegramMessage(chatId, text, parseMode = "HTML") {
+async function sendTelegramMessage(chatId, text) {
   try {
+    // Intentamos enviar con HTML
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
-      text,
-      parse_mode: parseMode,
+      text: text,
+      parse_mode: "HTML",
     });
   } catch (error) {
-    console.error("Error enviando HTML a Telegram, reintentando texto plano...");
-    // Si falla el envío con HTML, enviamos el texto limpio de etiquetas
-    try {
-      const plainText = text.replace(/<[^>]*>?/gm, ''); 
-      await axios.post(`${TELEGRAM_API}/sendMessage`, {
-        chat_id: chatId,
-        text: plainText,
-      });
-    } catch (retryError) {
-      console.error("Error crítico final:", retryError.message);
-    }
+    console.error("Fallo HTML, enviando como texto plano limpio...");
+    // Si falla, enviamos el texto eliminando manualmente las etiquetas HTML que pusimos
+    const plainText = text.replace(/<[^>]*>?/gm, ''); 
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
+      chat_id: chatId,
+      text: plainText,
+    });
   }
 }
-
 // ── Función auxiliar: procesar /sesion con Gemini ────────────────────────────
 async function procesarSesionConGemini(descripcion) {
   const model = genAI.getGenerativeModel({
@@ -166,24 +162,21 @@ export default async function handler(req, res) {
       // 2. Guardar en Supabase
       const sesionGuardada = await guardarSesionEnSupabase(chatId, userId, descripcion, geminiData);
 
-      // 3. Construir respuesta escapando el contenido de la IA (Mejora 1 aplicada aquí)
-      // 3. Construir respuesta (Asegúrate de que esta parte esté así)
+     // Aquí aplicamos la limpieza para que Telegram no se rompa
       const contenidosLimpios = escapeHTML(geminiData.contents);
-      const objetivosFormateados = geminiData.objectives
+      const objetivosLimpios = geminiData.objectives
         .map((obj, i) => `    ${i + 1}. ${escapeHTML(obj)}`)
         .join("\n");
 
       await sendTelegramMessage(
         chatId,
-        `✅ <b>Sesión #${sesionGuardada.id} registrada</b>\n\n` +
-        `<b>📝 Contenido técnico:</b>\n${contenidosLimpios}\n\n` +
-        `<b>🎯 Objetivos:</b>\n${objetivosFormateados}`
+        `✅ <b>Sesión #${sesion.id} registrada</b>\n\n` +
+        `<b>📝 Contenido:</b>\n${contenidosLimpios}\n\n` +
+        `<b>🎯 Objetivos:</b>\n${objetivosLimpios}`
       );
-      return;
     }
-
   } catch (error) {
-    console.error("Error en el handler:", error);
-    await sendTelegramMessage(chatId, `❌ <b>Error al procesar.</b> Inténtalo de nuevo.`);
+    console.error("ERROR FINAL:", error);
+    await sendTelegramMessage(chatId, "❌ Hubo un error. La sesión podría haberse guardado, pero falló la respuesta.");
   }
 }
