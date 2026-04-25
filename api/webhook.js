@@ -1,40 +1,88 @@
-// ============================================================
-// TRIANA DIGITAL CORE — Bot Webhook
-// Vercel Serverless Function (Node.js)
-// Archivo: api/webhook.js
-// ============================================================
-
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 
-// ── Clientes ──
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
-// ── Función auxiliar: Escapar HTML (Mejora 1) ─────────────────────────────────
+// ── Limpieza de texto para Telegram ──
 function escapeHTML(text) {
   if (!text) return "";
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// ── System Prompt (Mejora 3: Más limpio para evitar errores) ──────────────────
-const SYSTEM_PROMPT = `Eres un experto en balonmano. Analiza la sesión y extrae su contenido técnico.
-REGLAS ESTRICTAS:
-1. Responde ÚNICAMENTE con un objeto JSON válido. Sin texto adicional ni markdown.
-2. No uses símbolos especiales como < > o caracteres de formato extraños.
-3. El JSON debe tener exactamente estos dos campos:
-   - "contents": string con el resumen técnico de los contenidos trabajados en la sesión.
-   - "objectives": array de strings, cada uno representando un objetivo metodológico concreto.
+// ── Handler Principal ──
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(200).send("OK");
+  res.status(200).json({ ok: true }); // Respuesta inmediata a Telegram
+
+  const update = req.body;
+  if (!update?.message?.text) return;
+
+  const chatId = update.message.chat.id;
+  const texto = update.message.text.trim();
+
+  try {
+    if (texto === "/start") {
+      await sendTelegram(chatId, "👋 ¡Bot de <b>Triana</b> listo! Usa <code>/sesion [texto]</code>");
+      return;
+    }
+
+    if (texto.startsWith("/sesion")) {
+      const descripcion = texto.replace("/sesion", "").trim();
+      if (descripcion.length < 5) return await sendTelegram(chatId, "⚠️ Describe un poco más.");
+
+      await sendTelegram(chatId, "⏳ <i>Analizando...</i>");
+
+      // 1. Llamada a Gemini mejorada
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const prompt = `Analiza esta sesión de balonmano: "${descripcion}". 
+      Responde SOLO con este JSON: {"contents": "resumen técnico", "objectives": ["obj1", "obj2"]}`;
+      
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text().replace(/```json|```/g, "").trim();
+      const geminiData = JSON.parse(responseText);
+
+      // 2. Guardar en Supabase (Solo campos seguros para evitar errores de tipo UUID)
+      const { data: sesion, error: dbError } = await supabase
+        .from("sesiones")
+        .insert({
+          telegram_chat_id: String(chatId),
+          descripcion_original: descripcion,
+          contents: geminiData.contents,
+          objectives: geminiData.objectives
+        })
+        .select().single();
+
+      if (dbError) throw dbError;
+
+      // 3. Respuesta final
+      const msg = `✅ <b>Sesión #${sesion.id} guardada</b>\n\n` +
+                  `<b>📝 Contenido:</b> ${escapeHTML(geminiData.contents)}\n` +
+                  `<b>🎯 Objetivos:</b>\n${geminiData.objectives.map(o => "• " + escapeHTML(o)).join("\n")}`;
+      
+      await sendTelegram(chatId, msg);
+    }
+  } catch (err) {
+    console.error("ERROR:", err);
+    await sendTelegram(chatId, "❌ Error técnico. La IA o la Base de Datos no han respondido bien.");
+  }
+}
+
+// ── Función de envío ultra-segura ──
+async function sendTelegram(chatId, text) {
+  try {
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
+      chat_id: chatId,
+      text: text,
+      parse_mode: "HTML"
+    });
+  } catch (e) {
+    const cleanText = text.replace(/<[^>]*>?/gm, '');
+    await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: cleanText });
+  }
+}   - "objectives": array de strings, cada uno representando un objetivo metodológico concreto.
 4. Si la descripción es vaga o incompleta, infiere los objetivos más probables basándote en tu conocimiento de balonmano.
 5. Los objetivos deben ser específicos y accionables (ej: "Mejora del lanzamiento en salto desde posición de central").
 6. Máximo 5 objetivos por sesión.
