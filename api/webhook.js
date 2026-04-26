@@ -7,7 +7,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 export default async function handler(req, res) {
-  // 1. Respuesta inmediata para que Telegram no reintente
+  // Respuesta rápida para Telegram
   res.status(200).send("ok");
 
   if (req.method !== "POST" || !req.body?.message?.text) return;
@@ -17,46 +17,47 @@ export default async function handler(req, res) {
   const texto = req.body.message.text.trim();
 
   try {
-    // Comando /start
     if (texto === "/start") {
       await axios.post(`${TELEGRAM_API}/sendMessage`, {
         chat_id: chatId,
-        text: "Bot activo. Usa /sesion seguido de la explicacion de tu entrenamiento."
+        text: "Bot de Triana activo. Usa /sesion seguido de tu explicacion."
       });
       return;
     }
 
-    // Comando /sesion
     if (texto.startsWith("/sesion")) {
       const descripcion = texto.replace("/sesion", "").trim();
-      
       if (descripcion.length < 5) {
-        await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Descripcion demasiado corta." });
+        await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Escribe mas detalles de la sesion." });
         return;
       }
 
-      // Notificar que estamos trabajando
-      await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Procesando sesion..." });
+      await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Procesando y guardando..." });
 
-      // 2. IA: Gemini (Respuesta simple)
+      // 1. Llamada a Gemini (Flash)
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const prompt = `Analiza este entrenamiento de balonmano y devuelve UNICAMENTE un objeto JSON con estas claves: contents (string con resumen) y objectives (array de strings con 2 o 3 objetivos). Texto: ${descripcion}`;
+      const prompt = `Analiza este entrenamiento de balonmano y responde SOLO con un JSON: {"contents": "resumen tecnico", "objectives": ["obj1", "obj2"]}. Texto: ${descripcion}`;
       
       const result = await model.generateContent(prompt);
-      const cleanJson = result.response.text().replace(/```json|```/g, "").trim();
-      const geminiData = JSON.parse(cleanJson);
+      const responseText = result.response.text().replace(/```json|```/g, "").trim();
+      
+      if (!responseText) throw new Error("Gemini no respondio");
+      const geminiData = JSON.parse(responseText);
 
-      // 3. Base de Datos: Supabase (Sin riesgo de socio_id)
+      // 2. Busqueda de usuario (Blindada contra errores de socio_id)
       const { data: acceso } = await supabase
         .from("telegram_accesos")
         .select("socio_id")
         .eq("telegram_user_id", String(userId))
-        .maybeSingle(); // Si no estas en la tabla, no explota
+        .maybeSingle();
 
+      const idParaGuardar = acceso?.socio_id || null;
+
+      // 3. Insertar en Supabase (Tabla: sesiones)
       const { data: sesion, error: dbError } = await supabase
         .from("sesiones")
         .insert({
-          entrenador_id: acceso ? acceso.socio_id : null,
+          entrenador_id: idParaGuardar,
           telegram_chat_id: String(chatId),
           telegram_user_id: String(userId),
           descripcion_original: descripcion,
@@ -67,11 +68,11 @@ export default async function handler(req, res) {
 
       if (dbError) throw dbError;
 
-      // 4. Respuesta final (Texto plano, cero errores de formato)
+      // 4. Respuesta final (TEXTO PLANO, SIN FORMATO QUE DE ERROR)
       const mensajeFinal = 
-        `SESION GUARDADA (ID: ${sesion.id})\n\n` +
-        `RESUMEN: ${geminiData.contents}\n\n` +
-        `OBJETIVOS:\n- ${geminiData.objectives.join("\n- ")}`;
+        "SESION REGISTRADA CON EXITO (ID: " + sesion.id + ")\n\n" +
+        "RESUMEN: " + geminiData.contents + "\n\n" +
+        "OBJETIVOS:\n- " + geminiData.objectives.join("\n- ");
 
       await axios.post(`${TELEGRAM_API}/sendMessage`, {
         chat_id: chatId,
@@ -79,10 +80,10 @@ export default async function handler(req, res) {
       });
     }
   } catch (error) {
-    console.error("Error critico:", error);
+    console.error("Error final:", error);
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
-      text: "Error al procesar. Revisa los logs en Vercel."
+      text: "Error al procesar la sesion. Intentalo de nuevo en unos segundos."
     });
   }
 }
