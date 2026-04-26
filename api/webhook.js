@@ -1,121 +1,28 @@
-// ============================================================
-// TRIANA DIGITAL CORE — Bot Webhook (Versión 100% Robusta)
-// ============================================================
-
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 
-// ── Inicialización de Clientes ───────────────────────────────────────────────
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
-// ── Función auxiliar: Limpiar texto para evitar errores de Telegram ──────────
-function cleanForTelegram(text) {
-  if (!text) return "";
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// ── Función auxiliar: Enviar mensaje con sistema de rescate ───────────────────
-async function sendTelegramMessage(chatId, text) {
-  try {
-    // Intento 1: Enviar con formato HTML
-    await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id: chatId,
-      text: text,
-      parse_mode: "HTML",
-    });
-  } catch (error) {
-    console.error("Fallo HTML, enviando texto plano...");
-    // Intento 2: Si falla el HTML, enviamos el texto 100% limpio de etiquetas
-    try {
-      const plainText = text
-        .replace(/<[^>]*>?/gm, '') // Borra etiquetas <b>, <i>, etc.
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&');
-        
-      await axios.post(`${TELEGRAM_API}/sendMessage`, {
-        chat_id: chatId,
-        text: "⚠️ (Nota: Ajuste de formato automático)\n\n" + plainText,
-      });
-    } catch (retryError) {
-      console.error("Error crítico en Telegram:", retryError.message);
-    }
-  }
-}
-
-// ── Función auxiliar: Procesar descripción con Gemini ────────────────────────
-async function procesarSesionConGemini(descripcion) {
-  const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
-    generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
-    systemInstruction: `Eres un experto en balonmano. Analiza la sesión y extrae contenido técnico. 
-    Responde ÚNICAMENTE con un JSON: {"contents": "string", "objectives": ["string"]}`,
-  });
-
-  const result = await model.generateContent(descripcion);
-  const responseText = result.response.text().replace(/```json|```/g, "").trim();
-  return JSON.parse(responseText);
-}
-
-// ── Función auxiliar: Guardar en Supabase (Blindada contra errores de acceso) ─
-async function guardarSesionEnSupabase(chatId, userId, descripcion, geminiData) {
-  // Buscamos si el usuario de Telegram tiene permiso (entrenador registrado)
-  const { data: acceso } = await supabase
-    .from("telegram_accesos")
-    .select("socio_id")
-    .eq("telegram_user_id", String(userId))
-    .eq("activo", true)
-    .maybeSingle(); // No da error si no encuentra nada
-
-  const entrenadorId = acceso ? acceso.socio_id : null;
-
-  // Insertamos en la tabla "sesiones"
-  const { data, error } = await supabase
-    .from("sesiones")
-    .insert({
-      entrenador_id: entrenadorId,
-      telegram_chat_id: String(chatId),
-      telegram_user_id: String(userId),
-      descripcion_original: descripcion,
-      contents: geminiData.contents,
-      objectives: geminiData.objectives
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
-}
-
-// ── Handler Principal de Vercel ───────────────────────────────────────────────
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("Bot Triana Online");
-  
-  // Responder 200 a Telegram de inmediato
-  res.status(200).json({ ok: true });
+  // 1. Respuesta inmediata para que Telegram no reintente
+  res.status(200).send("ok");
 
-  const update = req.body;
-  if (!update?.message?.text) return;
+  if (req.method !== "POST" || !req.body?.message?.text) return;
 
-  const chatId = update.message.chat.id;
-  const userId = update.message.from.id;
-  const texto = update.message.text.trim();
-  const nombreUsuario = update.message.from.first_name || "Entrenador";
+  const chatId = req.body.message.chat.id;
+  const userId = req.body.message.from.id;
+  const texto = req.body.message.text.trim();
 
   try {
     // Comando /start
     if (texto === "/start") {
-      await sendTelegramMessage(chatId, `👋 ¡Hola <b>${nombreUsuario}</b>!\nUsa <code>/sesion [descripcion]</code> para registrar tu entrenamiento.`);
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: "Bot activo. Usa /sesion seguido de la explicacion de tu entrenamiento."
+      });
       return;
     }
 
@@ -123,19 +30,59 @@ export default async function handler(req, res) {
     if (texto.startsWith("/sesion")) {
       const descripcion = texto.replace("/sesion", "").trim();
       
-      if (descripcion.length < 10) {
-        await sendTelegramMessage(chatId, "⚠️ La descripción es muy corta. Detalla un poco más el entrenamiento.");
+      if (descripcion.length < 5) {
+        await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Descripcion demasiado corta." });
         return;
       }
 
-      await sendTelegramMessage(chatId, "⏳ <i>Analizando con IA y guardando en el panel del DT...</i>");
+      // Notificar que estamos trabajando
+      await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: "Procesando sesion..." });
 
-      // 1. Procesar con Gemini
-      const geminiData = await procesarSesionConGemini(descripcion);
+      // 2. IA: Gemini (Respuesta simple)
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const prompt = `Analiza este entrenamiento de balonmano y devuelve UNICAMENTE un objeto JSON con estas claves: contents (string con resumen) y objectives (array de strings con 2 o 3 objetivos). Texto: ${descripcion}`;
+      
+      const result = await model.generateContent(prompt);
+      const cleanJson = result.response.text().replace(/```json|```/g, "").trim();
+      const geminiData = JSON.parse(cleanJson);
 
-      // 2. Guardar en Supabase
-      const sesion = await guardarSesionEnSupabase(chatId, userId, descripcion, geminiData);
+      // 3. Base de Datos: Supabase (Sin riesgo de socio_id)
+      const { data: acceso } = await supabase
+        .from("telegram_accesos")
+        .select("socio_id")
+        .eq("telegram_user_id", String(userId))
+        .maybeSingle(); // Si no estas en la tabla, no explota
 
-      // 3. Formatear y enviar respuesta final
-      const contenidosLimpios = cleanForTelegram(geminiData.contents);
-      const objetivosLimpios = geminiData.
+      const { data: sesion, error: dbError } = await supabase
+        .from("sesiones")
+        .insert({
+          entrenador_id: acceso ? acceso.socio_id : null,
+          telegram_chat_id: String(chatId),
+          telegram_user_id: String(userId),
+          descripcion_original: descripcion,
+          contents: geminiData.contents,
+          objectives: geminiData.objectives
+        })
+        .select().single();
+
+      if (dbError) throw dbError;
+
+      // 4. Respuesta final (Texto plano, cero errores de formato)
+      const mensajeFinal = 
+        `SESION GUARDADA (ID: ${sesion.id})\n\n` +
+        `RESUMEN: ${geminiData.contents}\n\n` +
+        `OBJETIVOS:\n- ${geminiData.objectives.join("\n- ")}`;
+
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: mensajeFinal
+      });
+    }
+  } catch (error) {
+    console.error("Error critico:", error);
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
+      chat_id: chatId,
+      text: "Error al procesar. Revisa los logs en Vercel."
+    });
+  }
+}
