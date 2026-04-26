@@ -1,7 +1,6 @@
 // api/webhook.js
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import axios from "axios";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -12,18 +11,22 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 
 async function enviarMensaje(chatId, texto) {
   try {
-    await axios.post(
-      `${TELEGRAM_API}/sendMessage`,
-      { chat_id: chatId, text: texto },
-      { timeout: 8000 }
-    );
+    const response = await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: texto }),
+      signal: AbortSignal.timeout(25000)
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("Telegram API error:", err);
+    }
   } catch (e) {
     console.error("Error enviando a Telegram:", e.message);
   }
 }
 
 export default async function handler(req, res) {
-  // Responder a Telegram inmediatamente para evitar reintentos
   res.status(200).json({ ok: true });
 
   if (req.method !== "POST" || !req.body?.message?.text) return;
@@ -48,14 +51,14 @@ export default async function handler(req, res) {
 
       await enviarMensaje(chatId, "Procesando y guardando...");
 
-      // 1. Gemini IA con timeout controlado
+      // 1. Gemini IA
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const prompt = `Analiza este entrenamiento de balonmano y responde SOLO con un JSON valido (sin markdown, sin explicaciones): {"contents": "resumen breve del contenido", "objectives": ["objetivo1", "objetivo2"]}. Texto: ${descripcion}`;
 
       const geminiResult = await Promise.race([
         model.generateContent(prompt),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout Gemini")), 7000)
+          setTimeout(() => reject(new Error("Timeout Gemini")), 22000)
         )
       ]);
 
@@ -68,21 +71,21 @@ export default async function handler(req, res) {
       try {
         geminiData = JSON.parse(rawText);
       } catch {
-        throw new Error("La IA no devolvio un JSON valido: " + rawText.substring(0, 100));
+        throw new Error("JSON invalido de Gemini: " + rawText.substring(0, 80));
       }
 
       if (!geminiData.contents || !Array.isArray(geminiData.objectives)) {
-        throw new Error("Estructura JSON incorrecta de Gemini");
+        throw new Error("Estructura incorrecta: " + JSON.stringify(geminiData).substring(0, 80));
       }
 
-      // 2. Lookup de acceso (no bloquea si no existe)
+      // 2. Lookup acceso (opcional, no bloquea si no existe)
       const { data: acceso } = await supabase
         .from("telegram_accesos")
         .select("socio_id")
         .eq("telegram_user_id", userId)
         .maybeSingle();
 
-      // 3. Insertar en Supabase
+      // 3. Insert en Supabase
       const { data: sesion, error: dbError } = await supabase
         .from("sesiones")
         .insert({
@@ -97,10 +100,7 @@ export default async function handler(req, res) {
         .select()
         .single();
 
-      if (dbError) {
-        console.error("DB Error:", dbError);
-        throw new Error("Error al guardar: " + dbError.message);
-      }
+      if (dbError) throw new Error("DB: " + dbError.message);
 
       // 4. Respuesta final
       const respuesta =
@@ -112,9 +112,6 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error("Error critico:", error.message);
-    await enviarMensaje(
-      chatId,
-      "⚠️ Error al procesar. Detalle: " + error.message.substring(0, 100)
-    );
+    await enviarMensaje(chatId, "Error: " + error.message.substring(0, 150));
   }
 }
